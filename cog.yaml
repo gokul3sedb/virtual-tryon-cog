@@ -7,12 +7,8 @@ build:
   python_requirements: requirements.txt
   run:
     - curl -o /usr/local/bin/pget -L "https://github.com/replicate/pget/releases/latest/download/pget_$(uname -s)_$(uname -m)" && chmod +x /usr/local/bin/pget
-    # --- Qwen-Image-Edit models (Qwen edit nodes are native to ComfyUI; no custom node packs needed) ---
-    - mkdir -p ComfyUI/models/diffusion_models ComfyUI/models/text_encoders ComfyUI/models/vae ComfyUI/models/loras
-    - pget "https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_2509_fp8_e4m3fn.safetensors" ComfyUI/models/diffusion_models/qwen_image_edit_2509_fp8_e4m3fn.safetensors
-    - pget "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors" ComfyUI/models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
-    - pget "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors" ComfyUI/models/vae/qwen_image_vae.safetensors
-    - pget "https://huggingface.co/lightx2v/Qwen-Image-Lightning/resolve/main/Qwen-Image-Lightning-8steps-V1.0.safetensors" ComfyUI/models/loras/Qwen-Image-Lightning-8steps.safetensors
-    - pget "https://civitai.com/api/download/models/2196278" ComfyUI/models/loras/qwen_clothes_tryon.safetensors
+    # Qwen models are downloaded at SETUP time in predict.py via huggingface_hub
+    # (build-time HF pget hits a xet-CDN 403). Just ensure the libs are present.
+    - pip install "huggingface_hub>=0.25" hf_transfer
 predict: "predict.py:Predictor"
 train: "train.py:train"
