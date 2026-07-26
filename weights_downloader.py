@@ -47,6 +47,14 @@ class WeightsDownloader:
                     self.weights_map[weight_str]["dest"],
                 )
         else:
+            # Custom weights (pre-downloaded in the cog build, or auto-downloaded
+            # at runtime by a custom node) aren't in cog-comfyui's manifest. If the
+            # file already exists under ComfyUI/models, skip instead of raising.
+            import glob
+            matches = glob.glob(f"ComfyUI/models/**/{weight_str}", recursive=True)
+            if matches:
+                print(f"✅ custom weight {weight_str} present ({matches[0]}), skipping manifest check")
+                return
             raise ValueError(
                 f"{weight_str} unavailable. View the list of available weights: https://github.com/replicate/cog-comfyui/blob/main/supported_weights.md"
             )

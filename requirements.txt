@@ -68,3 +68,10 @@ alembic
 SQLAlchemy
 yarl>=1.18.0
 gguf
+
+# --- Virtual Try-On custom deps (PuLID + CatVTON) ---
+insightface
+facexlib
+facenet-pytorch
+timm
+diffusers>=0.32.2

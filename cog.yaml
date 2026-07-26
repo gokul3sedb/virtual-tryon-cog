@@ -8,5 +8,14 @@ build:
   run:
     - curl -o /usr/local/bin/pget -L "https://github.com/replicate/pget/releases/latest/download/pget_$(uname -s)_$(uname -m)" && chmod +x /usr/local/bin/pget
     - pip install onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+    # facenet-pytorch (PuLID dep) can pin torch down; reinstall the intended torch after.
+    - pip install facenet-pytorch || true
+    # Apply the **kwargs patch to the PuLID node so it works with current ComfyUI.
+    - bash scripts/patch_pulid.sh || true
+    # Pre-download our custom weights (not in cog-comfyui's manifest) so predict skips them.
+    - mkdir -p ComfyUI/models/checkpoints ComfyUI/models/pulid ComfyUI/models/loras ComfyUI/models/clip
+    - pget "https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors" ComfyUI/models/checkpoints/flux1-dev-fp8.safetensors || true
+    - pget "https://huggingface.co/guozinan/PuLID/resolve/main/pulid_flux_v0.9.1.safetensors" ComfyUI/models/pulid/pulid_flux_v0.9.1.safetensors || true
+    - pget "https://huggingface.co/ujouy/Amateur_Photography_FluxDev/resolve/main/amateurphoto-v6-forcu.safetensors" ComfyUI/models/loras/amateur_photo.safetensors || true
 predict: "predict.py:Predictor"
 train: "train.py:train"

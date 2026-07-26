@@ -1,184 +1,132 @@
+"""
+Virtual Try-On — Replicate cog predictor.
+
+Two modes (auto-selected by whether a garment is uploaded):
+  A) Preset outfit: face_image + outfit_preset + background_preset
+       -> Flux + PuLID (identity) + realism LoRA generate the dressed person.
+  B) Garment upload: face_image + garment_image (+ background_preset)
+       -> generate a base person, then CatVTON swaps the uploaded garment on.
+
+Built on replicate/cog-comfyui. See workflow_combined.json for the node graph.
+"""
+
 import os
+import json
 import shutil
-import tarfile
-import zipfile
-import mimetypes
-from PIL import Image
-from typing import List, Optional
+from typing import Optional
 from cog import BasePredictor, Input, Path
+
 from comfyui import ComfyUI
-from weights_downloader import WeightsDownloader
-from cog_model_helpers import optimise_images
-from config import config
-import requests
-import base64
-
-
-os.environ["DOWNLOAD_LATEST_WEIGHTS_MANIFEST"] = "true"
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-os.environ["YOLO_CONFIG_DIR"] = "/tmp/Ultralytics"
-
-mimetypes.add_type("image/webp", ".webp")
-mimetypes.add_type("video/webm", ".webm")
 
 OUTPUT_DIR = "/tmp/outputs"
 INPUT_DIR = "/tmp/inputs"
-COMFYUI_TEMP_OUTPUT_DIR = "ComfyUI/temp"
-ALL_DIRECTORIES = [OUTPUT_DIR, INPUT_DIR, COMFYUI_TEMP_OUTPUT_DIR]
+COMFYUI_TEMP = "/tmp/comfyui_temp"
+WORKFLOW_PATH = "workflow_combined.json"
 
-IMAGE_TYPES = [".jpg", ".jpeg", ".png", ".webp"]
-VIDEO_TYPES = [".mp4", ".mov", ".avi", ".mkv", ".webm"]
+# ---- Preset maps: dropdown choice -> prompt fragment -----------------------
+OUTFIT_PRESETS = {
+    "casual": "a casual white cotton t-shirt and blue denim jacket with jeans",
+    "formal": "a tailored charcoal grey three-piece business suit, white dress shirt and silk tie",
+    "ethnic": "a traditional embroidered cream silk kurta with gold thread work",
+    "seasonal": "a chunky knit wool sweater and a padded parka jacket with fur-lined hood",
+    "streetwear": "an oversized graphic hoodie and cargo pants",
+    "smart casual": "a fitted navy blazer over a plain white t-shirt with chinos",
+}
+BACKGROUND_PRESETS = {
+    "studio (default)": "against a clean neutral studio backdrop, soft even lighting",
+    "city street": "on a busy city street at golden hour",
+    "office": "in a modern minimalist office lobby",
+    "outdoor nature": "outdoors in a green park with soft natural daylight",
+    "cafe": "sitting in a cozy cafe with warm ambient light",
+    "beach": "on a sunny beach with the ocean behind, bright daylight",
+    "festive venue": "at a decorated festive venue with warm celebratory lighting",
+}
 
-with open("examples/api_workflows/birefnet_api.json", "r") as file:
-    EXAMPLE_WORKFLOW_JSON = file.read()
+REALISM_TEMPLATE = (
+    "candid amateur iPhone photo of {subject} wearing {outfit}, {background}, "
+    "natural available light, natural skin texture with visible pores and subtle "
+    "imperfections, slight film grain, realistic, unposed snapshot, upper body"
+)
 
 
 class Predictor(BasePredictor):
-    def setup(self, weights: str):
-        if bool(weights):
-            self.handle_user_weights(weights)
-
-        for directory in ALL_DIRECTORIES:
-            os.makedirs(directory, exist_ok=True)
-        os.makedirs(os.environ.get("YOLO_CONFIG_DIR", "/tmp/Ultralytics"), exist_ok=True)
-
+    def setup(self):
         self.comfyUI = ComfyUI("127.0.0.1:8188")
         self.comfyUI.start_server(OUTPUT_DIR, INPUT_DIR)
 
-    def handle_user_weights(self, weights: str):
-        if hasattr(weights, "url"):
-            if weights.url.startswith("http"):
-                weights_url = weights.url
-            else:
-                weights_url = "https://replicate.delivery/" + weights.url
-        else:
-            weights_url = weights
-
-        print(f"Downloading user weights from: {weights_url}")
-        WeightsDownloader.download("weights.tar", weights_url, config["USER_WEIGHTS_PATH"])
-        for item in os.listdir(config["USER_WEIGHTS_PATH"]):
-            source = os.path.join(config["USER_WEIGHTS_PATH"], item)
-            destination = os.path.join(config["MODELS_PATH"], item)
-            if os.path.isdir(source):
-                if not os.path.exists(destination):
-                    print(f"Moving {source} to {destination}")
-                    shutil.move(source, destination)
-                else:
-                    for root, _, files in os.walk(source):
-                        for file in files:
-                            if not os.path.exists(os.path.join(destination, file)):
-                                print(
-                                    f"Moving {os.path.join(root, file)} to {destination}"
-                                )
-                                shutil.move(os.path.join(root, file), destination)
-                            else:
-                                print(
-                                    f"Skipping {file} because it already exists in {destination}"
-                                )
-
-    def handle_input_file(self, input_file: Path):
-        file_extension = self.get_file_extension(input_file)
-
-        if file_extension == ".tar":
-            with tarfile.open(input_file, "r") as tar:
-                tar.extractall(INPUT_DIR)
-        elif file_extension == ".zip":
-            with zipfile.ZipFile(input_file, "r") as zip_ref:
-                zip_ref.extractall(INPUT_DIR)
-        elif file_extension in IMAGE_TYPES + VIDEO_TYPES:
-            shutil.copy(input_file, os.path.join(INPUT_DIR, f"input{file_extension}"))
-        else:
-            raise ValueError(f"Unsupported file type: {file_extension}")
-
-        print("====================================")
-        print(f"Inputs uploaded to {INPUT_DIR}:")
-        self.comfyUI.get_files(INPUT_DIR)
-        print("====================================")
-
-    def get_file_extension(self, input_file: Path) -> str:
-        file_extension = os.path.splitext(input_file)[1].lower()
-        if not file_extension:
-            with open(input_file, "rb") as f:
-                file_signature = f.read(4)
-            if file_signature.startswith(b"\x1f\x8b"):  # gzip signature
-                file_extension = ".tar"
-            elif file_signature.startswith(b"PK"):  # zip signature
-                file_extension = ".zip"
-            else:
-                try:
-                    with Image.open(input_file) as img:
-                        file_extension = f".{img.format.lower()}"
-                        print(f"Determined file type: {file_extension}")
-                except Exception as e:
-                    raise ValueError(
-                        f"Unable to determine file type for: {input_file}, {e}"
-                    )
-        return file_extension
-
     def predict(
         self,
-        workflow_json: str = Input(
-            description="Your ComfyUI workflow as JSON string or URL. You must use the API version of your workflow. Get it from ComfyUI using 'Save (API format)'. Instructions here: https://github.com/replicate/cog-comfyui",
-            default="",
+        face_image: Path = Input(
+            description="A clear, front-facing photo of the person's face. Their identity is preserved in the result.",
         ),
-        input_file: Optional[Path] = Input(
-            description="Input image, video, tar or zip file. Read guidance on workflows and input files here: https://github.com/replicate/cog-comfyui. Alternatively, you can replace inputs with URLs in your JSON workflow and the model will download them.",
+        outfit_preset: str = Input(
+            description="Pick an outfit style. Ignored if you upload a garment image.",
+            choices=list(OUTFIT_PRESETS.keys()),
+            default="casual",
+        ),
+        background_preset: str = Input(
+            description="Pick a background/location.",
+            choices=list(BACKGROUND_PRESETS.keys()),
+            default="studio (default)",
+        ),
+        garment_image: Optional[Path] = Input(
+            description="Optional: upload a photo of a specific garment (e.g. a shirt on a plain background) to try that exact item on. Overrides the outfit preset.",
             default=None,
         ),
-        return_temp_files: bool = Input(
-            description="Return any temporary files, such as preprocessed controlnet images. Useful for debugging.",
-            default=False,
+        seed: int = Input(
+            description="Random seed. Leave at 0 for a random result.",
+            default=0,
         ),
-        output_format: str = optimise_images.predict_output_format(),
-        output_quality: int = optimise_images.predict_output_quality(),
-        randomise_seeds: bool = Input(
-            description="Automatically randomise seeds (seed, noise_seed, rand_seed)",
-            default=True,
-        ),
-        force_reset_cache: bool = Input(
-            description="Force reset the ComfyUI cache before running the workflow. Useful for debugging.",
-            default=False,
-        ),
-    ) -> List[Path]:
-        """Run a single prediction on the model"""
-        self.comfyUI.cleanup(ALL_DIRECTORIES)
+    ) -> Path:
+        self.comfyUI.cleanup(ALL_DIRECTORIES=[OUTPUT_DIR, INPUT_DIR, COMFYUI_TEMP])
+        if seed == 0:
+            seed = int.from_bytes(os.urandom(3), "big")
 
-        if input_file:
-            self.handle_input_file(input_file)
+        # --- stage input images into ComfyUI's input dir ---
+        face_name = "face_input.png"
+        shutil.copy(str(face_image), os.path.join(INPUT_DIR, face_name))
+        use_garment = garment_image is not None
+        garment_name = None
+        if use_garment:
+            garment_name = "garment_input.png"
+            shutil.copy(str(garment_image), os.path.join(INPUT_DIR, garment_name))
 
-        workflow_json_content = workflow_json
-        if workflow_json.startswith("data:") and ";base64," in workflow_json:
-            try:
-                base64_part = workflow_json.split(",", 1)[1]
-                decoded_bytes = base64.b64decode(base64_part)
-                workflow_json_content = decoded_bytes.decode("utf-8")
-            except Exception as e:
-                raise ValueError(f"Failed to decode base64 workflow JSON: {e}")
-        elif workflow_json.startswith(("http://", "https://")):
-            try:
-                response = requests.get(workflow_json)
-                response.raise_for_status()
-                workflow_json_content = response.text
-            except requests.exceptions.RequestException as e:
-                raise ValueError(f"Failed to download workflow JSON from URL: {e}")
+        # --- build the prompt from presets ---
+        # For garment-upload mode we still generate a plausible base outfit so the
+        # body/pose exist; CatVTON then replaces the upper garment.
+        base_outfit = OUTFIT_PRESETS["casual"] if use_garment else OUTFIT_PRESETS[outfit_preset]
+        background = BACKGROUND_PRESETS[background_preset]
+        positive = REALISM_TEMPLATE.format(subject="a person", outfit=base_outfit, background=background)
 
-        wf = self.comfyUI.load_workflow(workflow_json_content or EXAMPLE_WORKFLOW_JSON)
+        # --- load + patch the workflow ---
+        with open(WORKFLOW_PATH, "r") as f:
+            wf = json.load(f)
+        wf.pop("_comment", None)
+        for k in list(wf.keys()):
+            if k.startswith("_"):
+                wf.pop(k)
 
+        wf["13"]["inputs"]["image"] = face_name          # PuLID face reference
+        wf["3"]["inputs"]["text"] = positive             # positive prompt
+        wf["6"]["inputs"]["seed"] = seed                 # sampler seed
+
+        if use_garment:
+            # Mode B: keep the CatVTON branch; drop the person-only SaveImage (8).
+            wf["20"]["inputs"]["image"] = garment_name
+            wf["25"]["inputs"]["seed"] = seed
+            wf.pop("8", None)
+        else:
+            # Mode A: preset outfit only. Drop the entire CatVTON branch (20-26).
+            for n in ["20", "21", "22", "23", "24", "25", "26"]:
+                wf.pop(n, None)
+
+        # --- run ---
+        wf = self.comfyUI.load_workflow(wf)
         self.comfyUI.connect()
-
-        if force_reset_cache or not randomise_seeds:
-            self.comfyUI.reset_execution_cache()
-
-        if randomise_seeds:
-            self.comfyUI.randomise_seeds(wf)
-
         self.comfyUI.run_workflow(wf)
 
-        output_directories = [OUTPUT_DIR]
-        if return_temp_files:
-            output_directories.append(COMFYUI_TEMP_OUTPUT_DIR)
-
-        optimised_files = optimise_images.optimise_image_files(
-            output_format, output_quality, self.comfyUI.get_files(output_directories)
-        )
-        return [Path(p) for p in optimised_files]
+        # --- return the single output image ---
+        files = self.comfyUI.get_files(OUTPUT_DIR)
+        if not files:
+            raise RuntimeError("No output produced.")
+        return files[-1]

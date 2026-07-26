@@ -1,0 +1,51 @@
+{
+  "_comment": "COMBINED: PuLID face-gen (person) -> optional CatVTON garment swap. predict.py toggles the CatVTON branch by whether a garment is uploaded.",
+
+  "1":  {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "flux1-dev-fp8.safetensors"}},
+  "2":  {"class_type": "LoraLoader", "inputs": {"model": ["1",0], "clip": ["1",1],
+         "lora_name": "amateur_photo.safetensors", "strength_model": 0.65, "strength_clip": 0.5}},
+
+  "10": {"class_type": "PulidFluxModelLoader", "inputs": {"pulid_file": "pulid_flux_v0.9.1.safetensors"}},
+  "11": {"class_type": "PulidFluxInsightFaceLoader", "inputs": {"provider": "CUDA"}},
+  "12": {"class_type": "PulidFluxEvaClipLoader", "inputs": {}},
+  "13": {"class_type": "LoadImage", "inputs": {"image": "FACE_IMAGE"}},
+  "14": {"class_type": "ApplyPulidFlux", "inputs": {
+         "model": ["2",0], "pulid_flux": ["10",0], "eva_clip": ["12",0],
+         "face_analysis": ["11",0], "image": ["13",0],
+         "weight": 0.95, "start_at": 0.0, "end_at": 1.0}},
+
+  "3":  {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2",1], "text": "POSITIVE_PROMPT"}},
+  "4":  {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2",1],
+         "text": "plastic skin, over-smoothed, airbrushed, waxy, cartoon, CGI, 3d render, flat lighting, perfect symmetry, blurry, deformed, extra fingers"}},
+  "5":  {"class_type": "EmptySD3LatentImage", "inputs": {"width": 768, "height": 1024, "batch_size": 1}},
+  "6":  {"class_type": "KSampler", "inputs": {"model": ["14",0], "positive": ["3",0], "negative": ["4",0],
+         "latent_image": ["5",0], "seed": 1, "steps": 30, "cfg": 2.75,
+         "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
+  "7":  {"class_type": "VAEDecode", "inputs": {"samples": ["6",0], "vae": ["1",2]}},
+
+  "_person_output": "node 7 = the generated PuLID person. If NO garment: SaveImage node 8 outputs this directly.",
+  "8":  {"class_type": "SaveImage", "inputs": {"images": ["7",0], "filename_prefix": "result_person"}},
+
+  "_catvton_branch": "Only wired when a garment is uploaded (predict.py sets image ref to node 7's saved output or feeds directly).",
+  "20": {"class_type": "LoadImage", "inputs": {"image": "GARMENT_IMAGE"}},
+  "21": {"class_type": "LayerMask: SegformerB2ClothesUltra", "inputs": {
+         "image": ["7", 0],
+         "face": false, "hair": false, "hat": false, "sunglass": false,
+         "left_arm": false, "right_arm": false, "left_leg": false, "right_leg": false,
+         "upper_clothes": true, "skirt": false, "pants": false, "dress": true,
+         "belt": false, "shoe": false, "bag": false, "scarf": false,
+         "detail_method": "VITMatte", "detail_erode": 12, "detail_dilate": 6,
+         "black_point": 0.15, "white_point": 0.99, "process_detail": true,
+         "device": "cuda", "max_megapixels": 2.0}},
+  "22": {"class_type": "TryOffQuantizerNode", "inputs": {"quantizer": "4Bit"}},
+  "23": {"class_type": "TryOffModelNode", "inputs": {
+         "model_name": "xiaozaa/catvton-flux-alpha", "device": "cuda", "transformers_config": ["22",0]}},
+  "24": {"class_type": "TryOffFluxFillPipelineNode", "inputs": {
+         "transformer": ["23",0], "device": "cuda",
+         "transformers_config": ["22",0], "diffusers_config": ["22",1]}},
+  "25": {"class_type": "TryOnRunNode", "inputs": {
+         "image_in": ["7",0], "garment_in": ["20",0], "mask_in": ["21",1], "pipe": ["24",0],
+         "width": 576, "height": 768, "num_steps": 30, "guidance_scale": 30.0,
+         "seed": 1234, "prompt": "The pair of images highlights a clothing and its styling on a person, high quality, detailed fabric"}},
+  "26": {"class_type": "SaveImage", "inputs": {"images": ["25",0], "filename_prefix": "result_tryon"}}
+}
