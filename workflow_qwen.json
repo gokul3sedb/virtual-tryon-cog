@@ -1,0 +1,29 @@
+{
+  "_comment": "Qwen full-edit outfit change: NO mask (so garment shape can change - shirt to kurta). Person + garment as SEPARATE inputs to TextEncodeQwenImageEditPlus (no stitch = no stretch/strip). Full-image edit; Qwen's geometric reasoning changes the whole outfit while keeping face/pose.",
+
+  "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_edit_2509_fp8_e4m3fn.safetensors", "weight_dtype": "default"}},
+  "2": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["1",0], "lora_name": "qwen_clothes_tryon.safetensors", "strength_model": 1.2}},
+  "3": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["2",0], "lora_name": "Qwen-Image-Lightning-8steps.safetensors", "strength_model": 1.0}},
+  "4": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
+  "5": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
+
+  "10": {"class_type": "LoadImage", "inputs": {"image": "GARMENT"}},
+  "11": {"class_type": "LoadImage", "inputs": {"image": "PERSON"}},
+
+  "12": {"class_type": "ImageScaleToTotalPixels", "inputs": {"image": ["11",0], "upscale_method": "lanczos", "megapixels": 1.0, "resolution_steps": 8}},
+
+  "30": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {
+      "clip": ["4",0], "vae": ["5",0], "image1": ["12",0], "image2": ["10",0],
+      "prompt": "Replace the outfit of the person in the first image with the full outfit shown in the second image. Change the entire garment including its shape, length, sleeves, collar and style to match the second image. Keep the person's face, hairstyle, body pose and the background exactly the same."}},
+  "31": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {
+      "clip": ["4",0], "vae": ["5",0], "image1": ["12",0], "image2": ["10",0],
+      "prompt": "different face, changed face, distorted, deformed, blurry, low quality, changed background"}},
+
+  "40": {"class_type": "VAEEncode", "inputs": {"pixels": ["12",0], "vae": ["5",0]}},
+  "50": {"class_type": "KSampler", "inputs": {
+      "model": ["3",0], "positive": ["30",0], "negative": ["31",0], "latent_image": ["40",0],
+      "seed": 12345, "steps": 8, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
+
+  "60": {"class_type": "VAEDecode", "inputs": {"samples": ["50",0], "vae": ["5",0]}},
+  "61": {"class_type": "SaveImage", "inputs": {"images": ["60",0], "filename_prefix": "qwen_nomask"}}
+}
